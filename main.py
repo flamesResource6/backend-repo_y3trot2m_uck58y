@@ -1,11 +1,11 @@
 import os
 from datetime import datetime, timezone
-from fastapi import FastAPI, HTTPException, Depends
+from fastapi import FastAPI, HTTPException, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional
 from database import db, create_document, get_documents
-from schemas import Customer, Lead, Feedback
+from schemas import Customer, Lead, Feedback, Admin
 
 app = FastAPI(title="Agency Leads Dashboard API")
 
@@ -55,7 +55,7 @@ def test_database():
     return response
 
 
-# Auth models (simple password hash provided externally for now)
+# ----- Simple Customer Auth -----
 class LoginRequest(BaseModel):
     email: str
     password: str
@@ -94,16 +94,80 @@ def login(payload: LoginRequest):
 
 # Dependency to get current customer from token header
 
-def get_current_customer(authorization: Optional[str] = None):
+def get_current_customer(authorization: Optional[str] = Header(default=None, alias="Authorization")):
     if db is None:
         raise HTTPException(status_code=500, detail="Database not configured")
     if not authorization:
         raise HTTPException(status_code=401, detail="Missing token")
     token = authorization.replace("Bearer ", "")
-    customer = db["customer"].find_one({"_id": __import__("bson").ObjectId(token)})
+    try:
+        oid = __import__("bson").ObjectId(token)
+    except Exception:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    customer = db["customer"].find_one({"_id": oid})
     if not customer:
         raise HTTPException(status_code=401, detail="Invalid token")
     return customer
+
+
+# ----- Admin Auth -----
+class AdminLoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+class AdminLoginResponse(BaseModel):
+    token: str
+    admin_id: str
+    username: str
+    role: str = "admin"
+
+
+def ensure_default_admin():
+    """Create default admin (admin/admin) if it doesn't exist. Safe no-op if DB unavailable."""
+    try:
+        if db is None:
+            return
+        existing = db["admin"].find_one({"username": "admin"})
+        if not existing:
+            data = Admin(username="admin", password_hash="admin", role="admin", is_active=True)
+            create_document("admin", data)
+    except Exception:
+        # Don't crash app on startup if DB is unreachable
+        pass
+
+
+@app.on_event("startup")
+async def startup_event():
+    # best-effort admin seed; ignore failures
+    ensure_default_admin()
+
+
+@app.post("/admin/login", response_model=AdminLoginResponse)
+def admin_login(payload: AdminLoginRequest):
+    if db is None:
+        raise HTTPException(status_code=500, detail="Database not configured")
+    admin = db["admin"].find_one({"username": payload.username})
+    if not admin or payload.password != admin.get("password_hash"):
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    token = str(admin.get("_id"))
+    return AdminLoginResponse(token=token, admin_id=token, username=admin.get("username", "admin"), role="admin")
+
+
+def get_current_admin(authorization: Optional[str] = Header(default=None, alias="Authorization")):
+    if db is None:
+        raise HTTPException(status_code=500, detail="Database not configured")
+    if not authorization:
+        raise HTTPException(status_code=401, detail="Missing token")
+    token = authorization.replace("Bearer ", "")
+    try:
+        oid = __import__("bson").ObjectId(token)
+    except Exception:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    admin = db["admin"].find_one({"_id": oid})
+    if not admin:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    return admin
 
 
 # Leads Endpoints

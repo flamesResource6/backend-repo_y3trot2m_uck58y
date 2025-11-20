@@ -46,3 +46,14 @@ class Feedback(BaseModel):
     disposition: Literal["qualified", "unqualified", "follow_up", "wrong_number", "no_response"] = "follow_up"
     comment: Optional[str] = None
     submitted_at: Optional[datetime] = None
+
+
+class Admin(BaseModel):
+    """
+    Admin users (separate auth)
+    Collection: "admin"
+    """
+    username: str = Field(..., description="Admin username")
+    password_hash: str = Field(..., description="Hashed password")
+    role: Literal["admin"] = "admin"
+    is_active: bool = True
